@@ -16,9 +16,16 @@ type AtomicLog = Arc<Mutex<dyn Logger>>;
 type AtomicRecv = Arc<Mutex<Receiver<bool>>>;
 type AtomicVars = Arc<HashMap<String, String>>;
 
-pub enum TargetPlatform {
+enum TargetPlatform {
     Machine(Box<Machine>),
     Container(Box<Container>),
+}
+
+#[allow(dead_code)]
+enum Log {
+    Write(String),
+    Info(String),
+    Error(String),
 }
 
 #[derive(Default)]
@@ -116,9 +123,13 @@ pub struct Runner {
 }
 
 impl Runner {
-    fn dumpln(&self, message: &str) {
+    fn write(&self, log: Log) {
         let mut lg = self.lg.lock().unwrap();
-        lg.dumpln(message);
+        match &log {
+            Log::Write(msg) => lg.dumpln(msg),
+            Log::Info(msg) => lg.info(msg),
+            Log::Error(msg) => lg.error(msg),
+        }
     }
 
    fn persist_start(&mut self) {
@@ -132,11 +143,10 @@ impl Runner {
     }
 
     fn info(&self) {
-        let mut logger = self.lg.lock().unwrap();
         if let Some(name) = &self.pip.name {
-            logger.dumpln(&format!("[bld] Pipeline: {name}"));
+            self.write(Log::Write(format!("Pipeline: {name}")));
         }
-        logger.dumpln(&format!("[bld] Runs on: {}", self.pip.runs_on));
+        self.write(Log::Write(format!("Runs on: {}", self.pip.runs_on)));
     }
     
     fn apply_run_properties(&self, txt: &str) -> String {
@@ -180,12 +190,7 @@ impl Runner {
                 let method = self.apply_context(artifact.method.as_ref().unwrap());
                 let from = self.apply_context(artifact.from.as_ref().unwrap());
                 let to = self.apply_context(artifact.to.as_ref().unwrap());
-                {
-                    let mut logger = self.lg.lock().unwrap();
-                    logger.dumpln(&format!(
-                        "[bld] Copying artifacts from: {from} into container to: {to}",
-                    ));
-                }
+                self.write(Log::Write(format!("Copying artifacts from: {from} into container to: {to}")));
                 let result = match (&self.platform, &method[..]) {
                     (TargetPlatform::Container(container), PUSH) => container.copy_into(&from, &to).await,
                     (TargetPlatform::Container(container), GET) => container.copy_from(&from, &to).await,
@@ -213,8 +218,7 @@ impl Runner {
     
     async fn step(&self, step: &BuildStep) -> anyhow::Result<()> {
         if let Some(name) = &step.name {
-            let mut logger = self.lg.lock().unwrap();
-            logger.info(&format!("[bld] Step: {name}"));
+            self.write(Log::Info(format!("Step: {name}")));
         }
         self.call(step).await?;
         self.sh(step).await?;
@@ -276,10 +280,10 @@ impl Runner {
             match self.artifacts(&None).await {
                 Ok(_) => {
                     if let Err(e) = self.steps().await {
-                        self.dumpln(&e.to_string());
+                        self.write(Log::Error(e.to_string()));
                     }
                 }
-                Err(e) => self.dumpln(&e.to_string()),
+                Err(e) => self.write(Log::Error(e.to_string())),
             }
             self.persist_end();
             self.dispose().await
